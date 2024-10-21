@@ -1,10 +1,10 @@
 #include "global.h"
-#include "vt.h"
+#include "terminal.h"
 
 StackEntry* sStackInfoListStart = NULL;
 StackEntry* sStackInfoListEnd = NULL;
 
-void StackCheck_Init(StackEntry* entry, void* stackTop, void* stackBottom, u32 initValue, s32 minSpace,
+void StackCheck_Init(StackEntry* entry, void* stackBottom, void* stackTop, u32 initValue, s32 minSpace,
                      const char* name) {
     StackEntry* iter;
     u32* addr;
@@ -12,19 +12,24 @@ void StackCheck_Init(StackEntry* entry, void* stackTop, void* stackBottom, u32 i
     if (entry == NULL) {
         sStackInfoListStart = NULL;
     } else {
-        entry->head = (uintptr_t)stackTop;
-        entry->tail = (uintptr_t)stackBottom;
+        entry->head = stackBottom;
+        entry->tail = stackTop;
         entry->initValue = initValue;
         entry->minSpace = minSpace;
         entry->name = name;
+
+#if !PLATFORM_N64
         iter = sStackInfoListStart;
         while (iter) {
             if (iter == entry) {
-                osSyncPrintf(VT_COL(RED, WHITE) "stackcheck_init: %08x は既にリスト中にある\n" VT_RST, entry);
+                PRINTF(VT_COL(RED, WHITE) T("stackcheck_init: %08x は既にリスト中にある\n",
+                                            "stackcheck_init: %08x is already in the list\n") VT_RST,
+                       entry);
                 return;
             }
             iter = iter->next;
         }
+#endif
 
         entry->prev = sStackInfoListEnd;
         entry->next = NULL;
@@ -39,8 +44,8 @@ void StackCheck_Init(StackEntry* entry, void* stackTop, void* stackBottom, u32 i
         }
 
         if (entry->minSpace != -1) {
-            addr = (u32*)entry->head;
-            while ((uintptr_t)addr < entry->tail) {
+            addr = entry->head;
+            while (addr < entry->tail) {
                 *addr++ = entry->initValue;
             }
         }
@@ -48,6 +53,17 @@ void StackCheck_Init(StackEntry* entry, void* stackTop, void* stackBottom, u32 i
 }
 
 void StackCheck_Cleanup(StackEntry* entry) {
+#if PLATFORM_N64
+    if (!entry->prev) {
+        sStackInfoListStart = entry->next;
+    } else {
+        entry->prev->next = entry->next;
+    }
+
+    if (!entry->next) {
+        sStackInfoListEnd = entry->prev;
+    }
+#else
     u32 inconsistency = false;
 
     if (!entry->prev) {
@@ -67,44 +83,104 @@ void StackCheck_Cleanup(StackEntry* entry) {
             inconsistency = true;
         }
     }
+
     if (inconsistency) {
-        osSyncPrintf(VT_COL(RED, WHITE) "stackcheck_cleanup: %08x リスト不整合です\n" VT_RST, entry);
+        PRINTF(VT_COL(RED, WHITE) T("stackcheck_cleanup: %08x リスト不整合です\n",
+                                    "stackcheck_cleanup: %08x list inconsistent\n") VT_RST,
+               entry);
+    }
+#endif
+}
+
+#if PLATFORM_N64
+
+u32 StackCheck_Check(StackEntry* entry) {
+    if (entry == NULL) {
+        u32 ret = 0;
+        StackEntry* iter = sStackInfoListStart;
+
+        while (iter) {
+            u32 state = StackCheck_Check(iter);
+
+            if (state != STACK_STATUS_OK) {
+                ret = 1;
+            }
+            iter = iter->next;
+        }
+
+        return ret;
+    } else {
+        u32* last;
+        u32 used;
+        u32 free;
+        u32 ret;
+
+        for (last = entry->head; last < entry->tail; last++) {
+            if (entry->initValue != *last) {
+                break;
+            }
+        }
+
+        used = (uintptr_t)entry->tail - (uintptr_t)last;
+        free = (uintptr_t)last - (uintptr_t)entry->head;
+
+        if (free == 0) {
+            ret = STACK_STATUS_OVERFLOW;
+        } else if (free < (u32)entry->minSpace && entry->minSpace != -1) {
+            ret = STACK_STATUS_WARNING;
+        } else {
+            ret = STACK_STATUS_OK;
+        }
+
+        osSyncPrintf("head=%08x tail=%08x last=%08x used=%08x free=%08x [%s]\n", entry->head, entry->tail, last, used,
+                     free, entry->name != NULL ? entry->name : "(null)");
+
+        return ret;
     }
 }
 
-s32 StackCheck_GetState(StackEntry* entry) {
-    u32* last;
-    size_t used;
-    size_t free;
-    s32 ret;
+#else
 
-    for (last = (uintptr_t*)entry->head; (uintptr_t)last < entry->tail; last++) {
+u32 StackCheck_GetState(StackEntry* entry) {
+    u32* last;
+    u32 used;
+    u32 free;
+    u32 ret;
+
+    for (last = entry->head; last < entry->tail; last++) {
         if (entry->initValue != *last) {
             break;
         }
     }
 
-    used = entry->tail - (uintptr_t)last;
-    free = (uintptr_t)last - entry->head;
+    used = (uintptr_t)entry->tail - (uintptr_t)last;
+    free = (uintptr_t)last - (uintptr_t)entry->head;
 
     if (free == 0) {
         ret = STACK_STATUS_OVERFLOW;
-        osSyncPrintf(VT_FGCOL(RED));
+        PRINTF(VT_FGCOL(RED));
     } else if (free < (u32)entry->minSpace && entry->minSpace != -1) {
         ret = STACK_STATUS_WARNING;
-        osSyncPrintf(VT_FGCOL(YELLOW));
+        PRINTF(VT_FGCOL(YELLOW));
     } else {
-        osSyncPrintf(VT_FGCOL(GREEN));
+        PRINTF(VT_FGCOL(GREEN));
         ret = STACK_STATUS_OK;
     }
 
-    osSyncPrintf("head=%08x tail=%08x last=%08x used=%08x free=%08x [%s]\n", entry->head, entry->tail, last, used, free,
-                 entry->name != NULL ? entry->name : "(null)");
-    osSyncPrintf(VT_RST);
+#if !OOT_DEBUG
+    // This string is still in .rodata for retail builds
+    (void)"(null)";
+#endif
 
+    PRINTF("head=%08x tail=%08x last=%08x used=%08x free=%08x [%s]\n", entry->head, entry->tail, last, used, free,
+           entry->name != NULL ? entry->name : "(null)");
+    PRINTF(VT_RST);
+
+#if OOT_DEBUG
     if (ret != STACK_STATUS_OK) {
-        LogUtils_LogHexDump(entry->head, entry->tail - entry->head);
+        LogUtils_LogHexDump(entry->head, (uintptr_t)entry->tail - (uintptr_t)entry->head);
     }
+#endif
 
     return ret;
 }
@@ -132,3 +208,5 @@ u32 StackCheck_Check(StackEntry* entry) {
         return StackCheck_GetState(entry);
     }
 }
+
+#endif
