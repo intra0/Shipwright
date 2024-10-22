@@ -1,21 +1,24 @@
 #ifndef STDDEF_H
 #define STDDEF_H
 
-#include <stddef.h>
+#define NULL ((void*)0)
 
-//#ifndef __cplusplus
-//#define NULL ((void*)0)
-//#else
-//#define NULL nullptr
-//#endif
+#if !defined(_SIZE_T) && !defined(_SIZE_T_)
+#define _SIZE_T
 
-#if 0
-#define size_t unsigned long
-#define ssize_t long
+#if !defined(_MIPS_SZLONG) || (_MIPS_SZLONG == 32)
+typedef unsigned int    size_t;
+#endif
+#if defined(_MIPS_SZLONG) && (_MIPS_SZLONG == 64)
+typedef unsigned long   size_t;
+#endif
 
 #endif
 
-//typedef unsigned long size_t;
-//typedef long ssize_t;
+#ifdef __GNUC__
+#define offsetof(structure, member) __builtin_offsetof (structure, member)
+#else
+#define offsetof(structure, member) ((size_t)&(((structure*)0)->member))
+#endif
 
 #endif
